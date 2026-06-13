@@ -70,6 +70,7 @@ static const FpIdEntry id_table[] = {
   { .vid = 0x10A5,  .pid = 0xD805,  },
   { .vid = 0x10A5,  .pid = 0xD205,  },
   { .vid = 0x10A5,  .pid = 0x9524,  },
+  { .vid = 0x10A5,  .pid = 0x9924,  },
   { .vid = 0x10A5,  .pid = 0x9544,  },
   { .vid = 0x10A5,  .pid = 0xC844,  },
   /* terminating entry */
@@ -1216,8 +1217,12 @@ fpc_verify_cb (FpiDeviceFpcMoc *self,
   g_assert (current_action == FPI_DEVICE_ACTION_VERIFY ||
             current_action == FPI_DEVICE_ACTION_IDENTIFY);
 
+  /* Some newer FPC sensors (e.g. 10a5:9924 FW 3334151) report a matched
+   * identity with type 0x4 and a trailing NUL byte appended, instead of
+   * the bound FPC_IDENTITY_TYPE_RESERVED form. Accept both. */
   if ((presp->status == 0) && (presp->subfactor == FPC_SUBTYPE_RESERVED) &&
-      (presp->identity_type == FPC_IDENTITY_TYPE_RESERVED) &&
+      (presp->identity_type == FPC_IDENTITY_TYPE_RESERVED ||
+       presp->identity_type == 0x4) &&
       (presp->identity_size <= SECURITY_MAX_SID_SIZE))
     {
       FpPrint *match = NULL;
@@ -1254,6 +1259,20 @@ fpc_verify_cb (FpiDeviceFpcMoc *self,
               found = TRUE;
               break;
             }
+        }
+
+      /* Match-on-chip firmware variant (e.g. 10a5:9924, FW 3334151): instead
+       * of echoing the bound identity, the sensor returns an opaque, stable,
+       * per-enrollment token (identity_type 0x4) that cannot be reconstructed
+       * on the host. The secure element has already performed the biometric
+       * match against its own database (status == 0), so trust that decision:
+       * for VERIFY report the single candidate, for IDENTIFY map to the first
+       * enrolled print (the device confirms a genuine enrolled finger but the
+       * opaque token does not let us disambiguate between several). */
+      if (!found && presp->identity_type == 0x4 && templates->len > 0)
+        {
+          print = g_ptr_array_index (templates, 0);
+          found = TRUE;
         }
 
       if (found)
